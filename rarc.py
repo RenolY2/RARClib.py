@@ -1,8 +1,55 @@
 from struct import pack, unpack
 from io import BytesIO
-
+from itertools import chain
 from yaz0 import decompress, compress_fast, read_uint32, read_uint16
 
+def write_uint32(f, val):
+    f.write(pack(">I", val))
+
+def write_uint16(f, val):
+    f.write(pack(">H", val))
+
+def write_pad32(f):
+    next_aligned_pos = (f.tell() + 0x1F) & 0x20
+
+    f.write(b"\x00"*(next_aligned_pos - f.tell()))
+
+# Hashing algorithm taken from Gamma and LordNed's WArchive-Tools, hope it works
+def hash_name(name):
+    hash = 0
+    multiplier = 1
+    if len(name) + 1 == 2:
+        multiplier = 2
+    elif len(name) + 1 >= 3:
+        multiplier = 3
+
+    for letter in name:
+        hash = (hash*multiplier) & 0xFFFF
+        hash = (hash + ord(letter)) & 0xFFFF
+
+    return hash
+
+class StringTable(object):
+    def __init__(self):
+        self._strings = BytesIO()
+        self._stringmap = {}
+
+    def write_string(self, string):
+        if string not in self._stringmap:
+            offset = self._strings.tell()
+            self._strings.write(string.encode("shift-jis"))
+            self._strings.write(b"\x00")
+
+            self._stringmap[string] = offset
+
+    def get_string_offset(self, string):
+        return self._stringmap[string]
+
+    def size(self):
+        return self._strings.tell()#len(self._strings.getvalue())
+
+    def write_to(self, f):
+        f.write(self._strings.getvalue())
 
 def stringtable_get_name(f, stringtable_offset, offset):
     current = f.tell()
@@ -47,14 +94,15 @@ class Directory(object):
     @classmethod
     def from_dir(cls, path, follow_symlinks=False):
         dirname = os.path.basename(path)
-
+        #print(dirname, path)
         dir = cls(dirname)
 
         with os.scandir(path) as entries:
             for entry in entries:
+                print(entry.path, dirname)
                 if entry.is_dir(follow_symlinks=follow_symlinks):
-                    dir = Directory.from_dir(entry.path, follow_symlinks=follow_symlinks)
-                    dir.subdirs[entry.name] = dir
+                    newdir = Directory.from_dir(entry.path, follow_symlinks=follow_symlinks)
+                    dir.subdirs[entry.name] = newdir
 
                 elif entry.is_file(follow_symlinks=follow_symlinks):
                     with open(entry.path, "rb") as f:
@@ -107,7 +155,7 @@ class Directory(object):
 
                 if nodeindex in newparents:
                     print("Detected recursive directory: ", name)
-
+                    print(newparents, nodeindex)
                     print("Skipping")
                     continue
 
@@ -245,7 +293,7 @@ class Archive(object):
         self.root = None
 
     @classmethod
-    def from_dir(cls, path, follow_symlinks):
+    def from_dir(cls, path, follow_symlinks=False):
         arc = cls()
         dir = Directory.from_dir(path, follow_symlinks=follow_symlinks)
         arc.root = dir
@@ -326,20 +374,196 @@ class Archive(object):
     def extract_to(self, path):
         self.root.extract_to(path)
 
+    def write_arc(self, f):
+        stringtable = StringTable()
+
+        nodes = BytesIO()
+        entries = BytesIO()
+        data = BytesIO()
+
+        nodecount = 1
+        entries = 0
+
+        # Set up string table with all directory and file names
+        stringtable.write_string(".")
+        stringtable.write_string("..")
+        stringtable.write_string(self.root.name)
+
+        for dir, subdirnames, filenames in self.root.walk():
+            nodecount += len(subdirnames)
+            entries += len(subdirnames) + len(filenames)
+
+            for name in subdirnames:
+                stringtable.write_string(name)
+
+            for name in filenames:
+                stringtable.write_string(name)
+
+        f.write(b"RARC")
+        f.write(b"FOO ") # placeholder for filesize
+        write_uint32(f, 0x20)  #Unknown but often 0x20?
+        f.write(b"BAR ") # placeholder for data offset
+        f.write(b"\x00"*16) # 4 unknown ints
+
+        write_uint32(f, nodecount)
+        f.write(b"\x00"*8) # 2 unknown ints
+
+        #aligned_file_entry_offset = (0x20 + 44 + (nodecount*16) + 0x1F) & 0x20
+        #write_uint32(f, aligned_file_entry_offset)  # Offset to file entries aligned to multiples of 0x20
+        write_uint32(f, 0xF0F0F0F0)
+
+        f.write(b"\x00"*4) # 1 unknown int
+
+        #aligned_stringtable_offset = aligned_file_entry_offset + ((entries * 20) + 0x1F) & 0x20
+        #write_uint32(f, aligned_stringtable_offset)
+        write_uint32(f, 0xF0F0F0F0)
+
+        f.write(b"\x00"*8) # 2 unknown ints
+
+        node_offset = f.tell()
+
+        first_file_entry_index = 0
+
+        dirlist = []
+
+        #aligned_data_offset = aligned_stringtable_offset + (stringtable.size() + 0x1F) & 0x20
+
+        for i, dirinfo in enumerate(self.root.walk()):
+            dirpath, dirnames, filenames = dirinfo
+            dir = self[dirpath]
+            dir._nodeindex = i
+
+            dirlist.append(dir)
+
+            if i == 0:
+                nodetype = b"ROOT"
+            else:
+                nodetype = dir.name.upper().encode("shift-jis")[:4]
+                if len(nodetype) < 4:
+                    nodetype = nodetype + (b"\x00"*(4 - len(nodetype)))
+
+            f.write(nodetype)
+            write_uint32(f, stringtable.get_string_offset(dir.name))
+            hash = hash_name(dir.name)
+
+            entrycount = len(dirnames) + len(filenames)
+
+            write_uint32(f, hash << 16 | entrycount + 2)
+
+            write_uint32(f, first_file_entry_index)
+            first_file_entry_index += entrycount + 2 # Each directory has two special entries being the current and the parent directories
+
+        write_pad32(f)
+
+        current_file_entry_offset = f.tell()
+        #assert f.tell() == aligned_file_entry_offset
+        fileid = 0
+
+        for dir in dirlist:
+            specialdirs = [("..", dir.parent), (".", dir)]
+
+            for subdirname, subdir in chain(specialdirs, dir.subdirs.items()):
+                write_uint16(f, 0xFFFF)
+                write_uint16(f, hash_name(subdirname))
+                f.write(b"\x02\x00") # Flag for directory+padding
+                write_uint16(f, stringtable.get_string_offset(subdirname))
+
+                if subdir is None:
+                    child_nodeindex = 0xFFFFFFFF
+                else:
+                    child_nodeindex = subdir._nodeindex
+                write_uint32(f, child_nodeindex)
+                write_uint32(f, 0x10)
+                write_uint32(f, 0) # Padding
+
+            for filename, file in dir.files.items():
+                write_uint16(f, fileid)
+                write_uint16(f, hash_name(filename))
+                f.write(b"\x11\x00") # Flag for file+padding
+                write_uint16(f, stringtable.get_string_offset(filename))
+
+                filedata_offset = data.tell()
+                write_uint32(f, filedata_offset) # Write file data offset
+                data.write(file.getvalue()) # Write file data
+                write_uint32(f, data.tell()-filedata_offset) # Write file size
+                write_uint32(f, 0)
+
+                fileid += 1
+
+        write_pad32(f)
+        current_stringtable_offset = f.tell()
+        stringtable.write_to(f)
+
+        write_pad32(f)
+
+        current_data_offset = f.tell()
+
+        f.write(data.getvalue())
+
+        rarc_size = f.tell()
+
+        f.seek(4)
+        write_uint32(f, rarc_size)
+        f.seek(12)
+        write_uint32(f, current_data_offset-0x20)
+
+        f.seek(44)
+        write_uint32(f, current_file_entry_offset-0x20)
+
+        f.seek(52)
+        write_uint32(f, current_stringtable_offset-0x20)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
     import os
-    with open("airport0.szs 0.rarc", "rb") as f:
-        myarc = Archive.from_file(f)
+    if True:
+        """with open("airport0.szs 0.rarc", "rb") as f:
+            myarc = Archive.from_file(f)
 
-    print(myarc.root.name)
-    print("done reading")
+        print(myarc.root.name)
+        print("done reading")
 
-    print(myarc["scene"])
-    print(myarc.listdir("scene"))
-    print(myarc.listdir("scene/kinojii"))
-
-
-    myarc.extract_to("arctest")
+        print(myarc["scene"])
+        print(myarc.listdir("scene"))
+        print(myarc.listdir("scene/kinojii"))"""
 
 
+        #myarc.extract_to("arctests/test")
+        print("done, making arc out of it again")
+        newarc = Archive.from_dir("arctests/arctest", follow_symlinks=False)
+
+        print("done")
+        #for i in newarc.root.walk():
+        #    print(i)
+
+        print("ok, extracting again")
+
+        newarc.extract_to("arctests/arctestnew")
+
+        with open("newrarc.arc", "wb") as f:
+            newarc.write_arc(f)
+
+    if True:
+        print("================================")
+        print("TESTING THE NEW ARC")
+        with open("newrarc.arc", "rb") as f:
+            myarc = Archive.from_file(f)
+
+        for i in myarc.root.walk():
+            print(i)
+
+        myarc.extract_to("arctests/repacked")
