@@ -10,9 +10,13 @@ def write_uint16(f, val):
     f.write(pack(">H", val))
 
 def write_pad32(f):
-    next_aligned_pos = (f.tell() + 0x1F) & 0x20
+    next_aligned_pos = (f.tell() + 0x1F) & ~0x1F
 
     f.write(b"\x00"*(next_aligned_pos - f.tell()))
+    print(hex(f.tell()))
+    print(hex(next_aligned_pos))
+
+DATA = [0]
 
 # Hashing algorithm taken from Gamma and LordNed's WArchive-Tools, hope it works
 def hash_name(name):
@@ -99,7 +103,7 @@ class Directory(object):
 
         with os.scandir(path) as entries:
             for entry in entries:
-                print(entry.path, dirname)
+                #print(entry.path, dirname)
                 if entry.is_dir(follow_symlinks=follow_symlinks):
                     newdir = Directory.from_dir(entry.path, follow_symlinks=follow_symlinks)
                     dir.subdirs[entry.name] = newdir
@@ -116,14 +120,14 @@ class Directory(object):
     @classmethod
     def from_node(cls, f, _name, stringtable_offset, globalentryoffset, dataoffset, nodelist, currentnodeindex, parents=None):
         print("=============================")
-        print("Creating new node with index", currentnodeindex)
+        #print("Creating new node with index", currentnodeindex)
         name, unknown, entrycount, entryoffset = nodelist[currentnodeindex]
 
         newdir = cls(name, currentnodeindex)
 
         firstentry = globalentryoffset+entryoffset
-        print("Node", currentnodeindex, name, entrycount, entryoffset)
-        print("offset", f.tell())
+        #print("Node", currentnodeindex, name, entrycount, entryoffset)
+        #print("offset", f.tell())
         for i in range(entrycount):
             offset = globalentryoffset + (entryoffset+i)*20
             f.seek(offset)
@@ -131,11 +135,11 @@ class Directory(object):
             fileentry_data = f.read(20)
 
             fileid, hashcode, flags, padbyte, nameoffset, filedataoffset, datasize, padding = unpack(">HHBBHIII", fileentry_data)
-            print("offset", hex(firstentry+i*20), fileid, flags, nameoffset)
+            #print("offset", hex(firstentry+i*20), fileid, flags, nameoffset)
 
             name = stringtable_get_name(f, stringtable_offset, nameoffset)
 
-            print("name", name)
+            print("name", name, fileid)
 
             if name == "." or name == ".." or name == "":
                 continue
@@ -147,6 +151,7 @@ class Directory(object):
                 nodeindex = filedataoffset
 
                 name = stringtable_get_name(f, stringtable_offset, nameoffset)
+                print(name, hashcode, hash_name(name))
 
 
                 newparents = [currentnodeindex]
@@ -278,7 +283,7 @@ class File(BytesIO):
 
         f.seek(globaldataoffset+filedataoffset)
         file.write(f.read(datasize))
-
+        DATA[0] += datasize
         # Reset file position
         file.seek(0)
 
@@ -317,19 +322,19 @@ class Archive(object):
         f.read(4) # Unknown
         stringtable_offset = read_uint32(f) + 0x20
         f.read(8) # Unknown
-        print("nodes start at", hex(f.tell()))
+        #print("nodes start at", hex(f.tell()))
         nodes = []
 
-        print("Archive has", node_count, "nodes")
-        print("data offset", hex(data_offset))
+        #print("Archive has", node_count, "nodes")
+        #print("data offset", hex(data_offset))
         for i in range(node_count):
             nodetype = f.read(4)
             nodedata = f.read(4+2+2+4)
             nameoffset, unknown, entrycount, entryoffset = unpack(">IHHI", nodedata)
 
             dir_name = stringtable_get_name(f, stringtable_offset, nameoffset)
-
-            print(dir_name, hex(stringtable_offset), hex(nameoffset))
+            print(unknown, dir_name, hash_name(dir_name))
+            #print(dir_name, hex(stringtable_offset), hex(nameoffset))
             nodes.append((dir_name, unknown, entrycount, entryoffset))
         rootfoldername = nodes[0][0]
         newarc.root = Directory.from_node(f, rootfoldername, stringtable_offset, file_entry_offset, data_offset, nodes, 0)
@@ -406,7 +411,8 @@ class Archive(object):
         f.write(b"\x00"*16) # 4 unknown ints
 
         write_uint32(f, nodecount)
-        f.write(b"\x00"*8) # 2 unknown ints
+        write_uint32(f, 0x20) # unknown
+        f.write(b"\x00"*4) # 1 unknown ints
 
         #aligned_file_entry_offset = (0x20 + 44 + (nodecount*16) + 0x1F) & 0x20
         #write_uint32(f, aligned_file_entry_offset)  # Offset to file entries aligned to multiples of 0x20
@@ -447,8 +453,8 @@ class Archive(object):
             hash = hash_name(dir.name)
 
             entrycount = len(dirnames) + len(filenames)
-
-            write_uint32(f, hash << 16 | entrycount + 2)
+            write_uint16(f, hash)
+            write_uint16(f, entrycount+2)
 
             write_uint32(f, first_file_entry_index)
             first_file_entry_index += entrycount + 2 # Each directory has two special entries being the current and the parent directories
@@ -460,7 +466,22 @@ class Archive(object):
         fileid = 0
 
         for dir in dirlist:
-            specialdirs = [("..", dir.parent), (".", dir)]
+            for filename, file in dir.files.items():
+                write_uint16(f, fileid)
+                write_uint16(f, hash_name(filename))
+                f.write(b"\x11\x00") # Flag for file+padding
+                write_uint16(f, stringtable.get_string_offset(filename))
+
+                filedata_offset = data.tell()
+                write_uint32(f, filedata_offset) # Write file data offset
+                data.write(file.getvalue()) # Write file data
+                write_uint32(f, data.tell()-filedata_offset) # Write file size
+                write_pad32(data)
+                write_uint32(f, 0)
+
+                fileid += 1
+
+            specialdirs = [(".", dir), ("..", dir.parent)]
 
             for subdirname, subdir in chain(specialdirs, dir.subdirs.items()):
                 write_uint16(f, 0xFFFF)
@@ -476,25 +497,13 @@ class Archive(object):
                 write_uint32(f, 0x10)
                 write_uint32(f, 0) # Padding
 
-            for filename, file in dir.files.items():
-                write_uint16(f, fileid)
-                write_uint16(f, hash_name(filename))
-                f.write(b"\x11\x00") # Flag for file+padding
-                write_uint16(f, stringtable.get_string_offset(filename))
-
-                filedata_offset = data.tell()
-                write_uint32(f, filedata_offset) # Write file data offset
-                data.write(file.getvalue()) # Write file data
-                write_uint32(f, data.tell()-filedata_offset) # Write file size
-                write_uint32(f, 0)
-
-                fileid += 1
-
         write_pad32(f)
+        assert f.tell() % 0x20 == 0
         current_stringtable_offset = f.tell()
         stringtable.write_to(f)
 
         write_pad32(f)
+        stringtablesize = f.tell() - current_stringtable_offset
 
         current_data_offset = f.tell()
 
@@ -506,11 +515,15 @@ class Archive(object):
         write_uint32(f, rarc_size)
         f.seek(12)
         write_uint32(f, current_data_offset-0x20)
+        write_uint32(f, rarc_size - current_data_offset)
+        write_uint32(f, rarc_size - current_data_offset)
 
-        f.seek(44)
+        f.seek(40)
+
+        total_file_entries = first_file_entry_index
+        write_uint32(f, total_file_entries)
         write_uint32(f, current_file_entry_offset-0x20)
-
-        f.seek(52)
+        write_uint32(f, stringtablesize)
         write_uint32(f, current_stringtable_offset-0x20)
 
 
@@ -530,7 +543,7 @@ class Archive(object):
 
 if __name__ == "__main__":
     import os
-    if True:
+    if False:
         """with open("airport0.szs 0.rarc", "rb") as f:
             myarc = Archive.from_file(f)
 
@@ -557,7 +570,7 @@ if __name__ == "__main__":
         with open("newrarc.arc", "wb") as f:
             newarc.write_arc(f)
 
-    if True:
+    if False:
         print("================================")
         print("TESTING THE NEW ARC")
         with open("newrarc.arc", "rb") as f:
@@ -567,3 +580,20 @@ if __name__ == "__main__":
             print(i)
 
         myarc.extract_to("arctests/repacked")
+
+    import time
+    start = time.time()
+    with open("MRAMoriginal.arc", "rb") as f:
+        mram = Archive.from_file(f)
+    print("root folder is", mram.root.name)
+    print(DATA)
+    mram.extract_to("arctests/mram")
+
+
+    mram = Archive.from_dir("arctests/mram/mram")
+    with open("MRAM.arc", "wb") as f:
+        mram.write_arc(f)
+
+
+    end = time.time()
+    print(start, end, end-start)
