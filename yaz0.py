@@ -31,9 +31,9 @@ def write_limited(f, data, limit):
     else:
         f.write(data)
     
-def decompress(f, out=None):
-    if out is None:
-        out = BytesIO()
+def decompress(f, out):
+    #if out is None:
+    #    out = BytesIO()
     
     # A way to discover the total size of the input data that
     # should be compatible with most file-like objects.
