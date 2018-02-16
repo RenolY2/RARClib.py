@@ -3,6 +3,8 @@ from io import BytesIO
 from itertools import chain
 from yaz0 import decompress, compress_fast, read_uint32, read_uint16
 
+import time
+
 def write_uint32(f, val):
     f.write(pack(">I", val))
 
@@ -119,7 +121,7 @@ class Directory(object):
 
     @classmethod
     def from_node(cls, f, _name, stringtable_offset, globalentryoffset, dataoffset, nodelist, currentnodeindex, parents=None):
-        print("=============================")
+        #print("=============================")
         #print("Creating new node with index", currentnodeindex)
         name, unknown, entrycount, entryoffset = nodelist[currentnodeindex]
 
@@ -139,7 +141,7 @@ class Directory(object):
 
             name = stringtable_get_name(f, stringtable_offset, nameoffset)
 
-            print("name", name, fileid)
+            #print("name", name, fileid)
 
             if name == "." or name == ".." or name == "":
                 continue
@@ -151,7 +153,7 @@ class Directory(object):
                 nodeindex = filedataoffset
 
                 name = stringtable_get_name(f, stringtable_offset, nameoffset)
-                print(name, hashcode, hash_name(name))
+                #print(name, hashcode, hash_name(name))
 
 
                 newparents = [currentnodeindex]
@@ -309,8 +311,30 @@ class Archive(object):
     @classmethod
     def from_file(cls, f):
         newarc = cls()
-
+        print("ok")
         header = f.read(4)
+
+        if header == b"Yaz0":
+            # Decompress first
+            print("Yaz0 header detected, decompressing...")
+            start = time.time()
+            tmp = BytesIO()
+            f.seek(0)
+            decompress(f, tmp)
+            #with open("decompressed.bin", "wb") as g:
+            #    decompress(f,)
+            f = tmp
+            f.seek(0)
+
+            header = f.read(4)
+            print("Finished decompression.")
+            print("Time taken:", time.time() - start)
+
+        if header == b"RARC":
+            pass
+        else:
+            raise RuntimeError("Unknown file header: {} should be Yaz0 or RARC".format(header))
+
         size = read_uint32(f)
         f.read(4) #unknown
 
@@ -322,10 +346,9 @@ class Archive(object):
         f.read(4) # Unknown
         stringtable_offset = read_uint32(f) + 0x20
         f.read(8) # Unknown
-        #print("nodes start at", hex(f.tell()))
         nodes = []
 
-        #print("Archive has", node_count, "nodes")
+        print("Archive has", node_count, " total directories")
         #print("data offset", hex(data_offset))
         for i in range(node_count):
             nodetype = f.read(4)
@@ -333,9 +356,10 @@ class Archive(object):
             nameoffset, unknown, entrycount, entryoffset = unpack(">IHHI", nodedata)
 
             dir_name = stringtable_get_name(f, stringtable_offset, nameoffset)
-            print(unknown, dir_name, hash_name(dir_name))
+            #print(unknown, dir_name, hash_name(dir_name))
             #print(dir_name, hex(stringtable_offset), hex(nameoffset))
             nodes.append((dir_name, unknown, entrycount, entryoffset))
+
         rootfoldername = nodes[0][0]
         newarc.root = Directory.from_node(f, rootfoldername, stringtable_offset, file_entry_offset, data_offset, nodes, 0)
 
@@ -378,6 +402,13 @@ class Archive(object):
 
     def extract_to(self, path):
         self.root.extract_to(path)
+
+    def write_arc_compressed(self, f):
+        temp = BytesIO()
+        self.write_arc(temp)
+        temp.seek(0)
+
+        compress_fast(temp, f)
 
     def write_arc(self, f):
         stringtable = StringTable()
@@ -542,58 +573,56 @@ class Archive(object):
 
 
 if __name__ == "__main__":
+    import argparse
     import os
-    if False:
-        """with open("airport0.szs 0.rarc", "rb") as f:
-            myarc = Archive.from_file(f)
 
-        print(myarc.root.name)
-        print("done reading")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input",
+                        help="Path to the archive file (usually .arc or .szs) to be extracted or the directory to be packed into an archive file.")
+    parser.add_argument("--yaz0fast", action="store_true",
+                        help="Encode archive as yaz0 when doing directory->.arc/.szs")
+    parser.add_argument("output", default=None, nargs = '?',
+                        help="Output path to which the archive is extracted or a new archive file is written, depending on input.")
 
-        print(myarc["scene"])
-        print(myarc.listdir("scene"))
-        print(myarc.listdir("scene/kinojii"))"""
+    args = parser.parse_args()
+
+    inputpath = os.path.normpath(args.input)
+    if os.path.isdir(inputpath):
+        dir2arc = True
+    else:
+        dir2arc = False
 
 
-        #myarc.extract_to("arctests/test")
-        print("done, making arc out of it again")
-        newarc = Archive.from_dir("arctests/arctest", follow_symlinks=False)
+    if args.output is None:
+        path, name = os.path.split(inputpath)
 
+        if dir2arc:
+            #inputdir = os.listdir(inputpath)[0]
+            if args.yaz0fast:
+                outputpath = inputpath+".szs"
+            else:
+                outputpath = inputpath+".arc"
+        else:
+            outputpath = os.path.join(path, name+" Dir")
+    else:
+        outputpath = args.output
+
+    if dir2arc:
+        inputdir = os.listdir(inputpath)[0]
+        print("Packing directory to archive")
+        archive = Archive.from_dir(os.path.join(inputpath, inputdir))
+        print("Directory loaded into memory, writing archive now")
+
+        with open(outputpath, "wb") as f:
+            if args.yaz0fast:
+                archive.write_arc_compressed(f)
+            else:
+                archive.write_arc(f)
         print("done")
-        #for i in newarc.root.walk():
-        #    print(i)
-
-        print("ok, extracting again")
-
-        newarc.extract_to("arctests/arctestnew")
-
-        with open("newrarc.arc", "wb") as f:
-            newarc.write_arc(f)
-
-    if False:
-        print("================================")
-        print("TESTING THE NEW ARC")
-        with open("newrarc.arc", "rb") as f:
-            myarc = Archive.from_file(f)
-
-        for i in myarc.root.walk():
-            print(i)
-
-        myarc.extract_to("arctests/repacked")
-
-    import time
-    start = time.time()
-    with open("MRAMoriginal.arc", "rb") as f:
-        mram = Archive.from_file(f)
-    print("root folder is", mram.root.name)
-    print(DATA)
-    mram.extract_to("arctests/mram")
+    else:
+        print("Extracting archive to directory")
+        with open(inputpath, "rb") as f:
+            archive = Archive.from_file(f)
+        archive.extract_to(outputpath)
 
 
-    mram = Archive.from_dir("arctests/mram/mram")
-    with open("MRAM.arc", "wb") as f:
-        mram.write_arc(f)
-
-
-    end = time.time()
-    print(start, end, end-start)
