@@ -103,17 +103,17 @@ class Directory(object):
         #print(dirname, path)
         dir = cls(dirname)
 
-        with os.scandir(path) as entries:
-            for entry in entries:
-                #print(entry.path, dirname)
-                if entry.is_dir(follow_symlinks=follow_symlinks):
-                    newdir = Directory.from_dir(entry.path, follow_symlinks=follow_symlinks)
-                    dir.subdirs[entry.name] = newdir
+        #with os.scandir(path) as entries: <- not supported in versions earlier than 3.6 apparently
+        for entry in os.scandir(path):
+            #print(entry.path, dirname)
+            if entry.is_dir(follow_symlinks=follow_symlinks):
+                newdir = Directory.from_dir(entry.path, follow_symlinks=follow_symlinks)
+                dir.subdirs[entry.name] = newdir
 
-                elif entry.is_file(follow_symlinks=follow_symlinks):
-                    with open(entry.path, "rb") as f:
-                        file = File.from_file(entry.name, f)
-                    dir.files[entry.name] = file
+            elif entry.is_file(follow_symlinks=follow_symlinks):
+                with open(entry.path, "rb") as f:
+                    file = File.from_file(entry.name, f)
+                dir.files[entry.name] = file
 
         return dir
 
@@ -603,7 +603,7 @@ if __name__ == "__main__":
             else:
                 outputpath = inputpath+".arc"
         else:
-            outputpath = os.path.join(path, name+" Dir")
+            outputpath = os.path.join(path, name+"_ext")
     else:
         outputpath = args.output
 
