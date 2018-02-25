@@ -15,8 +15,8 @@ def write_pad32(f):
     next_aligned_pos = (f.tell() + 0x1F) & ~0x1F
 
     f.write(b"\x00"*(next_aligned_pos - f.tell()))
-    print(hex(f.tell()))
-    print(hex(next_aligned_pos))
+    #print(hex(f.tell()))
+    #print(hex(next_aligned_pos))
 
 DATA = [0]
 
@@ -618,7 +618,7 @@ if __name__ == "__main__":
                 archive.write_arc_compressed(f)
             else:
                 archive.write_arc(f)
-        print("done")
+        print("Done")
     else:
         print("Extracting archive to directory")
         with open(inputpath, "rb") as f:
