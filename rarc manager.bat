@@ -1,2 +1,4 @@
 python "%~dp0rarc.py" %1
-pause
+if errorlevel 1 (
+	pause
+)
