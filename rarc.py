@@ -599,9 +599,16 @@ if __name__ == "__main__":
         if dir2arc:
             #inputdir = os.listdir(inputpath)[0]
             if args.yaz0fast:
-                outputpath = inputpath+".szs"
+                #outputpath = inputpath+".szs"
+                ending = ".szs"
             else:
-                outputpath = inputpath+".arc"
+                ending = ".arc"
+                #outputpath = inputpath+".arc"
+            
+            if inputpath.endswith("_ext"):
+                outputpath = inputpath[:-4]
+            else:
+                outputpath = inputpath + ending 
         else:
             outputpath = os.path.join(path, name+"_ext")
     else:
