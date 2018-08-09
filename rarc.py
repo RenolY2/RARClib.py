@@ -124,6 +124,8 @@ class Directory(object):
         #print("=============================")
         #print("Creating new node with index", currentnodeindex)
         name, unknown, entrycount, entryoffset = nodelist[currentnodeindex]
+        if name is None:
+            name = _name 
 
         newdir = cls(name, currentnodeindex)
 
@@ -275,7 +277,7 @@ class File(BytesIO):
 
     @classmethod
     def from_fileentry(cls, f, stringtable_offset, globaldataoffset, fileid, hashcode, flags, nameoffset, filedataoffset, datasize):
-        filename = stringtable_get_name(f, stringtable_offset, nameoffset)
+        raw, filename = stringtable_get_name(f, stringtable_offset, nameoffset)
         """print("-----")
         print("File", len(filename))
         print("size", datasize)
@@ -349,15 +351,20 @@ class Archive(object):
         nodes = []
 
         print("Archive has", node_count, " total directories")
+
+                
+        f.seek(node_start)
         #print("data offset", hex(data_offset))
         for i in range(node_count):
             nodetype = f.read(4)
             nodedata = f.read(4+2+2+4)
             nameoffset, unknown, entrycount, entryoffset = unpack(">IHHI", nodedata)
 
-            dir_name = stringtable_get_name(f, stringtable_offset, nameoffset)
-            #print(unknown, dir_name, hash_name(dir_name))
-            #print(dir_name, hex(stringtable_offset), hex(nameoffset))
+            if i == 0:
+                dir_name = stringtable_get_name(f, stringtable_offset, nameoffset)
+            else:
+                dir_name = None 
+                
             nodes.append((dir_name, unknown, entrycount, entryoffset))
 
         rootfoldername = nodes[0][0]
@@ -597,13 +604,10 @@ if __name__ == "__main__":
         path, name = os.path.split(inputpath)
 
         if dir2arc:
-            #inputdir = os.listdir(inputpath)[0]
             if args.yaz0fast:
-                #outputpath = inputpath+".szs"
                 ending = ".szs"
             else:
                 ending = ".arc"
-                #outputpath = inputpath+".arc"
             
             if inputpath.endswith("_ext"):
                 outputpath = inputpath[:-4]
