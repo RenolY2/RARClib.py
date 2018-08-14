@@ -277,7 +277,7 @@ class File(BytesIO):
 
     @classmethod
     def from_fileentry(cls, f, stringtable_offset, globaldataoffset, fileid, hashcode, flags, nameoffset, filedataoffset, datasize):
-        raw, filename = stringtable_get_name(f, stringtable_offset, nameoffset)
+        filename = stringtable_get_name(f, stringtable_offset, nameoffset)
         """print("-----")
         print("File", len(filename))
         print("size", datasize)
@@ -353,7 +353,7 @@ class Archive(object):
         print("Archive has", node_count, " total directories")
 
                 
-        f.seek(node_start)
+        
         #print("data offset", hex(data_offset))
         for i in range(node_count):
             nodetype = f.read(4)
@@ -619,7 +619,19 @@ if __name__ == "__main__":
         outputpath = args.output
 
     if dir2arc:
-        inputdir = os.listdir(inputpath)[0]
+        dirscan = os.scandir(inputpath)
+        inputdir = None 
+        
+        for entry in dirscan:
+            if entry.is_dir():
+                if inputdir is None:
+                    inputdir = entry.name
+                else:
+                    raise RuntimeError("Directory {0} contains multiple folders! Only one folder should exist.".format(inputpath))
+        
+        if inputdir is None:
+            raise RuntimeError("Directory {0} contains no folders! Exactly one folder should exist.".format(inputpath))
+        
         print("Packing directory to archive")
         archive = Archive.from_dir(os.path.join(inputpath, inputdir))
         print("Directory loaded into memory, writing archive now")
