@@ -254,6 +254,15 @@ class Directory(object):
 
         for dirname, dir in self.subdirs.items():
             dir.extract_to(current_dirpath)
+    
+    def absolute_path(self):
+        name = self.name
+        parent = self.parent
+        while parent is not None:
+            name = parent.name+"/"+name 
+            parent = parent.parent 
+        
+        return name
 
 class File(BytesIO):
     def __init__(self, filename, fileid=None, hashcode=None, flags=None):
@@ -300,7 +309,7 @@ class File(BytesIO):
 class Archive(object):
     def __init__(self):
         self.root = None
-
+        
     @classmethod
     def from_dir(cls, path, follow_symlinks=False):
         arc = cls()
@@ -369,7 +378,7 @@ class Archive(object):
 
         rootfoldername = nodes[0][0]
         newarc.root = Directory.from_node(f, rootfoldername, stringtable_offset, file_entry_offset, data_offset, nodes, 0)
-
+        
         return newarc
 
 
@@ -410,14 +419,14 @@ class Archive(object):
     def extract_to(self, path):
         self.root.extract_to(path)
 
-    def write_arc_compressed(self, f):
+    def write_arc_compressed(self, f, fileids = None, maxindex = 0):
         temp = BytesIO()
-        self.write_arc(temp)
+        self.write_arc(temp, fileids, maxindex)
         temp.seek(0)
 
         compress_fast(temp, f)
 
-    def write_arc(self, f):
+    def write_arc(self, f, fileids = None, maxindex = 0):
         stringtable = StringTable()
 
         nodes = BytesIO()
@@ -501,11 +510,33 @@ class Archive(object):
 
         current_file_entry_offset = f.tell()
         #assert f.tell() == aligned_file_entry_offset
-        fileid = 0
-
+        fileid = maxindex
+        
+        def key_compare(val):
+            if fileids is not None:
+                if val[0] in fileids:
+                    return fileids[val[0]]
+            return maxindex + 1
+        
         for dir in dirlist:
+            abspath = dir.absolute_path()   
+            files = []
+            
             for filename, file in dir.files.items():
-                write_uint16(f, fileid)
+                files.append((abspath+"/"+filename, file))
+            
+            files.sort(key=key_compare)            
+            
+            
+            for filepath, file in files:
+                if fileids is not None:
+                    if filepath in fileids:
+                        write_uint16(f, fileids[filepath])
+                    else:
+                        write_uint16(f, fileid)
+                else:
+                    write_uint16(f, fileid)
+                filename = file.name 
                 write_uint16(f, hash_name(filename))
                 f.write(b"\x11\x00") # Flag for file+padding
                 write_uint16(f, stringtable.get_string_offset(filename))
@@ -634,18 +665,52 @@ if __name__ == "__main__":
         
         print("Packing directory to archive")
         archive = Archive.from_dir(os.path.join(inputpath, inputdir))
+        filelisting = {}
+        maxindex = 0
+        try: 
+            with open(os.path.join(inputpath, "filelisting.txt"), "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("#"): continue 
+                    path, fileid = line.split(" ")
+                    filelisting[path] = int(fileid)
+                    if int(fileid) > maxindex:
+                        maxindex = int(fileid)
+        except:
+            print("no filelisting")
+            pass
+        
         print("Directory loaded into memory, writing archive now")
-
+        
+        
+        
         with open(outputpath, "wb") as f:
             if args.yaz0fast:
-                archive.write_arc_compressed(f)
+                archive.write_arc_compressed(f, filelisting, maxindex)
             else:
-                archive.write_arc(f)
+                archive.write_arc(f, filelisting, maxindex)
         print("Done")
     else:
         print("Extracting archive to directory")
         with open(inputpath, "rb") as f:
             archive = Archive.from_file(f)
         archive.extract_to(outputpath)
+        
+        with open(os.path.join(outputpath, "filelisting.txt"), "w") as f:
+            f.write("# DO NOT TOUCH THIS FILE\n")
+            for dirpath, dirnames, filenames in archive.root.walk():
+                currentdir = archive[dirpath]
+                #for name in dirnames:
+                #    
+                #    dir = currentdir[name]
+                #    f.write(dirpath+"/"+name)
+                #    f.write("\n")
+                    
+                for name in filenames:
+                    file = currentdir[name]
+                    f.write(dirpath+"/"+name)
+                    f.write(" ")
+                    f.write(str(file._fileid))
+                    f.write("\n")
 
 
