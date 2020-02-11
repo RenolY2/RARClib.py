@@ -34,7 +34,7 @@ def write_limited(f, data, limit):
     else:
         f.write(data)
     
-def decompress(f, out):
+def decompress(f, out, suppress_error=False):
     #if out is None:
     #    out = BytesIO()
     
@@ -47,7 +47,12 @@ def decompress(f, out):
     
     header = f.read(4)
     if header != b"Yaz0":
-        raise RuntimeError("File is not Yaz0-compressed! Header: {0}".format(header))
+        if suppress_error:
+            f.seek(0)
+            out.write(f.read())
+            return 
+        else:
+            raise RuntimeError("File is not Yaz0-compressed! Header: {0}".format(header))
     
     decompressed_size = read_uint32(f)
     f.read(8) # padding

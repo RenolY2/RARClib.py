@@ -2,14 +2,19 @@ from struct import pack, unpack
 from io import BytesIO
 from itertools import chain
 from yaz0 import decompress, compress_fast, read_uint32, read_uint16
-
+import subprocess 
 import time
+import os 
+import tempfile
 
 def write_uint32(f, val):
     f.write(pack(">I", val))
 
 def write_uint16(f, val):
     f.write(pack(">H", val))
+
+def write_uint8(f, val):
+    f.write(pack(">B", val))
 
 def write_pad32(f):
     next_aligned_pos = (f.tell() + 0x1F) & ~0x1F
@@ -18,6 +23,131 @@ def write_pad32(f):
     #print(hex(f.tell()))
     #print(hex(next_aligned_pos))
 
+
+class CompressionSetting(object):
+    def __init__(self, yaz0_fast=False, wszst=False, compression_level="9"):
+        self.yaz0_fast = yaz0_fast 
+        self.wszst = wszst 
+        self.compression_level = compression_level
+    
+    def run_wszst(self, file):
+        if not self.wszst:
+            raise RuntimeError("Wszst is not used")
+        handle, abspath = tempfile.mkstemp()
+        os.close(handle)
+        filedata = file.getvalue()
+        with open(abspath, "wb") as f:
+            print("writing to", abspath)
+            f.write(filedata)
+            f.close()
+        
+        outpath = abspath+".yaz0_tmp"
+        args = ["wszst", "COMPRESS", abspath, "--dest", outpath, "--compr", self.compression_level]
+        try:
+            subprocess.run(args, check=True)
+        except Exception as err:
+            print("Encountered error, cleaning up...")
+            os.remove(abspath)
+            raise 
+            
+        with open(outpath, "rb") as f:
+            compressed_data = f.read()
+            
+        os.remove(abspath)
+        os.remove(outpath)
+        
+        if len(filedata) >= len(compressed_data):
+            return compressed_data 
+        else:
+            print("Compressed data bigger than original, using uncompressed data")
+            return filedata 
+
+
+
+FILE = 0x01 
+DIRECTORY = 0x02
+COMPRESSED = 0x04
+DATA_FILE = 0x10 # unsure, opposed to REL file?
+REL_FILE = 0x20 # REL = dynamic link libraries
+YAZ0 = 0x80 # if not set but COMPRESSED is set, use yay0?
+
+class FileListing(object):
+    def __init__(self, is_file, is_dir, is_compressed, is_data, is_rel, is_yaz0):
+        self.is_file = is_file 
+        self.is_dir = is_dir 
+        self.is_compressed = is_compressed
+        self.is_data = is_data 
+        self.is_rel = is_rel
+        self.is_yaz0 = is_yaz0 
+    
+    @classmethod
+    def from_flags(cls, flags):
+        if flags & 0x40:
+            print("Unknown flag 0x40 set")
+        if flags & 0x8:
+            print("Unknown flag 0x8 set")
+            
+        return cls( flags & FILE != 0,
+                    flags & DIRECTORY != 0,
+                    flags & COMPRESSED != 0,
+                    flags & DATA_FILE != 0,
+                    flags & REL_FILE != 0,
+                    flags & YAZ0 != 0)
+    
+    def to_flags(self):
+        result = 0
+        if self.is_file:
+            result |= FILE 
+        if self.is_dir:
+            result |= DIRECTORY  
+        if self.is_compressed:
+            result |= COMPRESSED
+        if self.is_data:
+            result |= DATA_FILE 
+        if self.is_rel:
+            result |= REL_FILE
+        if self.is_yaz0:
+            result |= YAZ0 
+        
+        return result 
+    
+    def to_string(self):
+        result = []
+        if self.is_compressed and self.is_yaz0:
+            result.append("yaz0_compressed")
+        if self.is_rel:
+            result.append("rel")
+        
+        return "|".join(result)
+    
+    @classmethod
+    def from_string(cls, string):
+        file = True 
+        dir = False 
+        data_file = True 
+        rel_file = False 
+        compressed = False
+        yaz0 = False 
+        
+        result = string.split("|")
+        for setting in result:
+            if setting == "yaz0_compressed":
+                compressed = True 
+                yaz0 = True
+            elif setting == "rel":
+                data_file = False 
+                rel_file = True 
+        
+        return cls(file, dir, compressed, data_file, rel_file, yaz0)
+    
+    @classmethod
+    def default(cls):
+        # Default is a uncompressed Data File
+        return cls(True, False, False, True, False, False)
+    
+    def __str__(self):
+        return str(self.__dict__)
+    
 DATA = [0]
 
 # Hashing algorithm taken from Gamma and LordNed's WArchive-Tools, hope it works
@@ -109,6 +239,7 @@ class Directory(object):
             if entry.is_dir(follow_symlinks=follow_symlinks):
                 newdir = Directory.from_dir(entry.path, follow_symlinks=follow_symlinks)
                 dir.subdirs[entry.name] = newdir
+                newdir.parent = dir
 
             elif entry.is_file(follow_symlinks=follow_symlinks):
                 with open(entry.path, "rb") as f:
@@ -149,7 +280,7 @@ class Directory(object):
                 continue
             #print(name, nameoffset)
 
-            if (flags & 0b10) != 0 and not (flags & 0b1) == 1: #fileid == 0xFFFF: # entry is a sub directory
+            if (flags & DIRECTORY) != 0 and not (flags & FILE): #fileid == 0xFFFF: # entry is a sub directory
                 #fileentrydata = f.read(12)
                 #nodeindex, datasize, padding = unpack(">III", fileentrydata)
                 nodeindex = filedataoffset
@@ -175,6 +306,10 @@ class Directory(object):
 
 
             else: # entry is a file
+                if flags & COMPRESSED:
+                    print("File is compressed")
+                if flags & YAZ0:
+                    print("File is yaz0 compressed")
                 f.seek(offset)
                 file = File.from_fileentry(f, stringtable_offset, dataoffset, fileid, hashcode, flags, nameoffset, filedataoffset, datasize)
                 newdir.files[file.name] = file
@@ -249,7 +384,7 @@ class Directory(object):
 
         for filename, file in self.files.items():
             filepath = os.path.join(current_dirpath, filename)
-            with open(filepath, "wb") as f:
+            with open(filepath, "w+b") as f:
                 file.dump(f)
 
         for dirname, dir in self.subdirs.items():
@@ -272,7 +407,15 @@ class File(BytesIO):
         self._fileid = fileid
         self._hashcode = hashcode
         self._flags = flags
-
+        if flags is not None:
+            self.filetype = FileListing.from_flags(flags)
+        else:
+            self.filetype = FileListing.default()
+    def is_yaz0_compressed(self):
+        if self._flags & COMPRESSED and not self._flags & YAZ0:
+            print("Warning, file {0} is compressed but not with yaz0!".format(self.name))
+        return self.filetype.compressed and self.filetype.yaz0
+    
     @classmethod
     def from_file(cls, filename, f):
         file = cls(filename)
@@ -281,8 +424,6 @@ class File(BytesIO):
         file.seek(0)
 
         return file
-
-
 
     @classmethod
     def from_fileentry(cls, f, stringtable_offset, globaldataoffset, fileid, hashcode, flags, nameoffset, filedataoffset, datasize):
@@ -303,7 +444,10 @@ class File(BytesIO):
         return file
 
     def dump(self, f):
-        f.write(self.getvalue())
+        if self.is_yaz0_compressed:
+            decompress(self, f, suppress_error=True)
+        else:
+            f.write(self.getvalue())
 
 
 class Archive(object):
@@ -419,14 +563,20 @@ class Archive(object):
     def extract_to(self, path):
         self.root.extract_to(path)
 
-    def write_arc_compressed(self, f, fileids = None, maxindex = 0):
+    def write_arc_compressed(self, f, compression_settings, filelisting = None, maxindex = 0):
         temp = BytesIO()
-        self.write_arc(temp, fileids, maxindex)
+        self.write_arc(temp, compression_settings, filelisting, maxindex)
         temp.seek(0)
+        
+        if compression_settings.yaz0_fast:
+            compress_fast(temp, f)
+        elif compression_settings.wszst:
+            data = compression_settings.run_wszst(temp)
+        
+        f.write(data)
 
-        compress_fast(temp, f)
-
-    def write_arc(self, f, fileids = None, maxindex = 0):
+    def write_arc(self, f, compression_settings, filelisting=None, maxindex=0):
+        
         stringtable = StringTable()
 
         nodes = BytesIO()
@@ -513,12 +663,13 @@ class Archive(object):
         fileid = maxindex
         
         def key_compare(val):
-            if fileids is not None:
-                if val[0] in fileids:
-                    return fileids[val[0]]
+            if filelisting is not None:
+                if val[0] in filelisting:
+                    return filelisting[val[0]][0]
             return maxindex + 1
         
         for dir in dirlist:
+            print("Hello", dir.absolute_path())
             abspath = dir.absolute_path()   
             files = []
             
@@ -529,21 +680,41 @@ class Archive(object):
             
             
             for filepath, file in files:
-                if fileids is not None:
-                    if filepath in fileids:
-                        write_uint16(f, fileids[filepath])
+                filemeta = FileListing.default()
+                if filelisting is not None:
+                    if filepath in filelisting:
+                        fileid, filemeta = filelisting[filepath]
+                        write_uint16(f, fileid)
+                        print("found filemeta")
                     else:
                         write_uint16(f, fileid)
                 else:
                     write_uint16(f, fileid)
                 filename = file.name 
                 write_uint16(f, hash_name(filename))
-                f.write(b"\x11\x00") # Flag for file+padding
+                print("Writing filemeta", str(filemeta))
+                write_uint8(f, filemeta.to_flags())
+                write_uint8(f, 0) # padding 
+                #f.write(b"\x11\x00") # Flag for file+padding
                 write_uint16(f, stringtable.get_string_offset(filename))
 
                 filedata_offset = data.tell()
                 write_uint32(f, filedata_offset) # Write file data offset
-                data.write(file.getvalue()) # Write file data
+                
+                if filemeta.is_yaz0 and filemeta.is_compressed:
+                    print("so far so gud")
+                    if compression_settings.wszst:
+                        print("doing wszst thing")
+                        compressed_data = compression_setting.run_wszst(file)
+                        data.write(compressed_data)
+                    else:
+                        # if file was yaz0 compressed then always yaz0fast compress even if wszst is not set
+                        #yaz0.compress_fast(file, data)
+                        data.write(file.getvalue())
+                else:
+                    data.write(file.getvalue()) # Write file data
+                
+                
                 write_uint32(f, data.tell()-filedata_offset) # Write file size
                 write_pad32(data)
                 write_uint32(f, 0)
@@ -619,6 +790,11 @@ if __name__ == "__main__":
                         help="Path to the archive file (usually .arc or .szs) to be extracted or the directory to be packed into an archive file.")
     parser.add_argument("--yaz0fast", action="store_true",
                         help="Encode archive as yaz0 when doing directory->.arc/.szs")
+    parser.add_argument("--wszst", action="store_true",
+                        help="Use wszst (Wimms SZS tools) for yaz0 compression when doing directory->arc/.szs. wszst needs to be installed separately")
+    parser.add_argument("--wszst_comprlevel", default="9",
+                        help=("Set the compression level for wszst. Values are the same as in wszst's documentation. "
+                        "Possible values are 0..10 with 0 being worst, 9 being the default and best and 10 being ultra and most time consuming."))
     parser.add_argument("output", default=None, nargs = '?',
                         help="Output path to which the archive is extracted or a new archive file is written, depending on input.")
 
@@ -630,7 +806,9 @@ if __name__ == "__main__":
     else:
         dir2arc = False
 
-
+    compression_setting = CompressionSetting(args.yaz0fast, args.wszst, args.wszst_comprlevel)
+    print("Use wszst?", args.wszst)
+    
     if args.output is None:
         path, name = os.path.split(inputpath)
 
@@ -672,8 +850,16 @@ if __name__ == "__main__":
                 for line in f:
                     line = line.strip()
                     if line.startswith("#"): continue 
-                    path, fileid = line.split(" ")
-                    filelisting[path] = int(fileid)
+                    result = line.split(" ")
+                    if len(result) == 2:
+                        path, fileid = result 
+                        filelisting_meta = FileListing.default()
+                    else:
+                        path, fileid, metadata = result 
+                        filelisting_meta = FileListing.from_string(metadata)
+                        print(metadata, filelisting_meta)
+                    
+                    filelisting[path] = (int(fileid), filelisting_meta)
                     if int(fileid) > maxindex:
                         maxindex = int(fileid)
         except:
@@ -685,10 +871,10 @@ if __name__ == "__main__":
         
         
         with open(outputpath, "wb") as f:
-            if args.yaz0fast:
-                archive.write_arc_compressed(f, filelisting, maxindex)
+            if args.yaz0fast or args.wszst:
+                archive.write_arc_compressed(f, compression_setting, filelisting, maxindex)
             else:
-                archive.write_arc(f, filelisting, maxindex)
+                archive.write_arc(f, compression_setting, filelisting, maxindex)
         print("Done")
     else:
         print("Extracting archive to directory")
@@ -711,6 +897,11 @@ if __name__ == "__main__":
                     f.write(dirpath+"/"+name)
                     f.write(" ")
                     f.write(str(file._fileid))
+                    meta = file.filetype.to_string()
+                    print(hex(file._flags), file.filetype.to_string())
+                    if meta:
+                        f.write(" ")
+                        f.write(meta)
                     f.write("\n")
 
 
