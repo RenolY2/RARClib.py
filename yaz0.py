@@ -86,13 +86,13 @@ def decompress(f, out, suppress_error=False):
                 data = file_read(2)
                 infobyte = data[0] << 8 | data[1]
                 
-                if file_tell() >= maxsize-1:
-                    eof = True
-                    break
-                
+
                 bytecount = infobyte >> 12 
                 
                 if bytecount == 0:
+                    if file_tell() > maxsize-1:
+                        eof = True
+                        break
                     bytecount = file_read(1)[0] + 0x12
                 else:
                     bytecount += 2
@@ -126,10 +126,13 @@ def decompress(f, out, suppress_error=False):
 
                         j = (j+1) % copy_length
                 
-    
+    if out.tell() < decompressed_size:
+        #print("this isn't right")
+        raise RuntimeError("Didn't decompress correctly, notify the developer!")
     if out.tell() > decompressed_size:
         print(  "Warning: output is longer than decompressed size for some reason: "
                 "{}/decompressed: {}".format(out.tell(), decompressed_size))
+
 
 def compress_fast(f, out):
     data = f.read()
@@ -141,14 +144,16 @@ def compress_fast(f, out):
     out.write(b"\x00"*8)
 
     out_write = out.write
-
-    for i in range(maxsize//8):
+    print("size:", hex(maxsize))
+    print(maxsize//8, maxsize/8.0)
+    for i in range(int(math.ceil(maxsize/8))):
         start = i*8 
         end = (i+1)*8
-        
+        print(hex(start), hex(end))
         if end > maxsize:
             # Pad data with 0's up to 8 bytes
             tocopy = data[start:maxsize] + b"\x00"*(end-maxsize)
+            print("padded")
         else:
             tocopy = data[start:end]
         
