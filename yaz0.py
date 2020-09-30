@@ -149,7 +149,6 @@ def compress_fast(f, out):
     for i in range(int(math.ceil(maxsize/8))):
         start = i*8 
         end = (i+1)*8
-        print(hex(start), hex(end))
         if end > maxsize:
             # Pad data with 0's up to 8 bytes
             tocopy = data[start:maxsize] + b"\x00"*(end-maxsize)
