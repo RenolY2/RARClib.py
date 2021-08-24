@@ -573,7 +573,7 @@ class Archive(object):
         elif compression_settings.wszst:
             data = compression_settings.run_wszst(temp)
         
-        f.write(data)
+            f.write(data)
 
     def write_arc(self, f, compression_settings, filelisting=None, maxindex=0):
         
@@ -663,13 +663,13 @@ class Archive(object):
         fileid = maxindex
         
         def key_compare(val):
-            if filelisting is not None:
-                if val[0] in filelisting:
-                    return filelisting[val[0]][0]
+            #if filelisting is not None:
+            #    if val[0] in filelisting:
+            #        return filelisting[val[0]][0]
             return maxindex + 1
         
         for dir in dirlist:
-            print("Hello", dir.absolute_path())
+            #print("Hello", dir.absolute_path())
             abspath = dir.absolute_path()   
             files = []
             
@@ -685,14 +685,14 @@ class Archive(object):
                     if filepath in filelisting:
                         fileid, filemeta = filelisting[filepath]
                         write_uint16(f, fileid)
-                        print("found filemeta")
+                        #print("found filemeta")
                     else:
                         write_uint16(f, fileid)
                 else:
                     write_uint16(f, fileid)
                 filename = file.name 
                 write_uint16(f, hash_name(filename))
-                print("Writing filemeta", str(filemeta))
+                #print("Writing filemeta", str(filemeta))
                 write_uint8(f, filemeta.to_flags())
                 write_uint8(f, 0) # padding 
                 #f.write(b"\x11\x00") # Flag for file+padding
@@ -702,9 +702,9 @@ class Archive(object):
                 write_uint32(f, filedata_offset) # Write file data offset
                 
                 if filemeta.is_yaz0 and filemeta.is_compressed:
-                    print("so far so gud")
+                    #print("so far so gud")
                     if compression_settings.wszst:
-                        print("doing wszst thing")
+                        #print("doing wszst thing")
                         compressed_data = compression_setting.run_wszst(file)
                         data.write(compressed_data)
                     else:
@@ -857,7 +857,7 @@ if __name__ == "__main__":
                     else:
                         path, fileid, metadata = result 
                         filelisting_meta = FileListing.from_string(metadata)
-                        print(metadata, filelisting_meta)
+                        #print(metadata, filelisting_meta)
                     
                     filelisting[path] = (int(fileid), filelisting_meta)
                     if int(fileid) > maxindex:
