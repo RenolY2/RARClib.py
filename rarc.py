@@ -797,9 +797,14 @@ if __name__ == "__main__":
                         "Possible values are 0..10 with 0 being worst, 9 being the default and best and 10 being ultra and most time consuming."))
     parser.add_argument("output", default=None, nargs = '?',
                         help="Output path to which the archive is extracted or a new archive file is written, depending on input.")
-
+    parser.add_argument("--padding", type=int,
+                        help="Pad output to size in bytes. (useful for using save states in combination with modifying arc files while game is running)")
+    
+    parser.add_argument("--rootname", default=None, help="Rename the root folder when packing.")
     args = parser.parse_args()
-
+    
+    root = args.rootname
+    
     inputpath = os.path.normpath(args.input)
     if os.path.isdir(inputpath):
         dir2arc = True
@@ -843,6 +848,9 @@ if __name__ == "__main__":
         
         print("Packing directory to archive")
         archive = Archive.from_dir(os.path.join(inputpath, inputdir))
+        if root is not None:
+            archive.root.name = root 
+            print("Renamed archive root to, ", root)
         filelisting = {}
         maxindex = 0
         try: 
@@ -869,12 +877,21 @@ if __name__ == "__main__":
         print("Directory loaded into memory, writing archive now")
         
         
+        tmp = BytesIO()
         
+        if args.yaz0fast or args.wszst:
+            archive.write_arc_compressed(tmp, compression_setting, filelisting, maxindex)
+        else:
+            archive.write_arc(tmp, compression_setting, filelisting, maxindex)
+        
+        if args.padding is not None:
+            if len(tmp.getvalue()) > args.padding:
+                raise RuntimeError("Cannot write file, file exceeds padding. ({0} vs {1})".format(len(tmp.getvalue()), args.padding))
         with open(outputpath, "wb") as f:
-            if args.yaz0fast or args.wszst:
-                archive.write_arc_compressed(f, compression_setting, filelisting, maxindex)
-            else:
-                archive.write_arc(f, compression_setting, filelisting, maxindex)
+            f.write(tmp.getvalue())
+            
+            if args.padding is not None:
+                f.write(b"\x00"*(args.padding - f.tell()))
         print("Done")
     else:
         print("Extracting archive to directory")
@@ -903,5 +920,4 @@ if __name__ == "__main__":
                         f.write(" ")
                         f.write(meta)
                     f.write("\n")
-
 
